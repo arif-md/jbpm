@@ -16,15 +16,24 @@
 
 package org.jbpm.runtime.manager.impl.migration;
 
+import java.io.BufferedWriter;
+import java.io.FileInputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import javax.persistence.EntityManager;
 import javax.persistence.EntityManagerFactory;
@@ -142,6 +151,21 @@ public class MigrationManager {
         boolean migrateExecutorJobs = ((SimpleRuntimeEnvironment)currentManager.getEnvironment()).getEnvironmentTemplate().get("ExecutorService") != null;
         validate(migrateExecutorJobs);
         Map<Long, List<TimerInstance>> timerMigrated = null;
+        
+        //Read the properties file which has the problematic node Ids.
+    	Properties inputProps = new Properties();
+    	Set<String> nodeIdsSet = new HashSet<>();
+    	String propFile = System.getProperty("nodeIdsToSkipDuringVarResolution");
+    	if(propFile != null) {
+    		try (InputStream inputFile = new FileInputStream(propFile)) {
+    			inputProps.load(inputFile);
+    			String nodeIds = inputProps.getProperty("nodeIds");
+    			nodeIdsSet = Arrays.stream(nodeIds.split(",")).map(String::trim).collect(Collectors.toSet());
+    		} catch (IOException e){
+    			e.printStackTrace();
+    		}
+    	}
+        
         try {
 
             // collect and cancel any active timers before migration
@@ -252,7 +276,7 @@ public class MigrationManager {
                 }
                 current = JPAKnowledgeService.newStatefulKnowledgeSession(currentManager.getEnvironment().getKieBase(), null, currentManager.getEnvironment().getEnvironment());
                 tobe = toBeManager.getEnvironment().getKieBase().newKieSession();
-                upgradeProcessInstance(current, tobe, migrationSpec.getProcessInstanceId(), migrationSpec.getToProcessId(), nodeMapping, em, toBeManager.getIdentifier());
+                upgradeProcessInstance(current, tobe, migrationSpec.getProcessInstanceId(), migrationSpec.getToProcessId(), nodeMapping, em, toBeManager.getIdentifier(), nodeIdsSet);
 
                 if (!timerMigrated.isEmpty()) {
                     rescheduleTimersAfterMigration(toBeManager, timerMigrated);
@@ -374,7 +398,8 @@ public class MigrationManager {
                                         String processId,
                                         Map<String, String> nodeMapping,
                                         EntityManager em,
-                                        String deploymentId) {
+                                        String deploymentId,
+                                        Set<String> nodeIdsSet) {
         if (nodeMapping == null) {
             nodeMapping = new HashMap<String, String>();
         }
@@ -396,7 +421,7 @@ public class MigrationManager {
             org.kie.api.definition.process.Process oldProcess = processInstance.getProcess();
             processInstance.disconnect();
             processInstance.setProcess(oldProcess);
-            updateNodeInstances(processInstance, nodeMapping, (NodeContainer) process, em);
+            updateNodeInstances(processInstance, nodeMapping, (NodeContainer) process, em, nodeIdsSet);
             processInstance.setKnowledgeRuntime((InternalKnowledgeRuntime) extractIfNeeded(kruntime));
             processInstance.setDeploymentId(deploymentId);
             processInstance.setProcess(process);
@@ -405,15 +430,23 @@ public class MigrationManager {
     }
 
     @SuppressWarnings("unchecked")
-    private void updateNodeInstances(NodeInstanceContainer nodeInstanceContainer, Map<String, String> nodeMapping, NodeContainer nodeContainer, EntityManager em) {
+    private void updateNodeInstances(NodeInstanceContainer nodeInstanceContainer, Map<String, String> nodeMapping, NodeContainer nodeContainer, EntityManager em, Set<String> nodeIdsSet) {
 
+        String fileName = System.getProperty("taskIdsOutputFile", "/tmp/task-ids.properties");
+ 	    Properties taskIdToNameMap = new Properties();
+ 	    try (InputStream inputFile = new FileInputStream(fileName)) {
+ 		  taskIdToNameMap.load(inputFile);
+ 	    } catch (IOException e){
+ 	   		e.printStackTrace();
+ 	    }
+    	
         for (NodeInstance nodeInstance : nodeInstanceContainer.getNodeInstances()) {
             if (nodeInstance.getNode() == null) {
                 continue;
             }
             
             if (nodeInstance instanceof NodeInstanceContainer) {
-                updateNodeInstances((NodeInstanceContainer) nodeInstance, nodeMapping, nodeContainer, em);
+                updateNodeInstances((NodeInstanceContainer) nodeInstance, nodeMapping, nodeContainer, em, nodeIdsSet);
             }
             
             Long upgradedNodeId = null;
@@ -422,7 +455,7 @@ public class MigrationManager {
             if (newNodeId == null) {
                 newNodeId = oldNodeId;
             }
-            
+            boolean skipVarResolution = nodeIdsSet.contains(oldNodeId) ? true : false;
             Node upgradedNode = findNodeByUniqueId(newNodeId, nodeContainer);
             if (upgradedNode == null) {
                 Boolean isHidden = (Boolean) ((NodeImpl) ((org.jbpm.workflow.instance.NodeInstance) nodeInstance).getNode()).getMetaData().get("hidden");
@@ -442,7 +475,7 @@ public class MigrationManager {
             } else {
                 upgradedNodeId = upgradedNode.getId();
             }
-   
+            logger.info(" oldNodeUniqueId = "+oldNodeId+ " newNodeUniqueId = "+newNodeId+" oldNodeId = "+nodeInstance.getNode().getId()+" newNodeId = "+upgradedNodeId);            
             ((NodeInstanceImpl) nodeInstance).setNodeId(upgradedNodeId);
 
             if (upgradedNode != null) {
@@ -463,7 +496,7 @@ public class MigrationManager {
                                                         "where nodeInstanceId in (:ids) and processInstanceId = :processInstanceId");
                     nodeLogQuery
                                 .setParameter("nodeId", (String) upgradedNode.getMetaData().get("UniqueId"))
-                                .setParameter("nodeName", VariableUtil.resolveVariable(upgradedNode.getName(), nodeInstance))
+                                .setParameter("nodeName", skipVarResolution ? upgradedNode.getName() : VariableUtil.resolveVariable(upgradedNode.getName(), nodeInstance))
                                 .setParameter("nodeType", upgradedNode.getClass().getSimpleName())
                                 .setParameter("ids", nodeInstanceIds)
                                 .setParameter("processInstanceId", nodeInstance.getProcessInstance().getId());
@@ -480,11 +513,16 @@ public class MigrationManager {
                     String name = ((HumanTaskNode) upgradedNode).getName();
                     String description = (String) ((HumanTaskNode) upgradedNode).getWork().getParameter("Description");
 
+                    if(skipVarResolution) {
+                    	logger.info("skipping variable resolution for the task : Id = "+taskId+" name = "+name+" description = "+description);                    	
+                    	taskIdToNameMap.setProperty(taskId.toString(), name);
+                    }
+                    
                     // update task audit instance log with new deployment and process id
                     Query auditTaskLogQuery = em.createQuery("update AuditTaskImpl set name = :name, description = :description where taskId = :taskId");
                     auditTaskLogQuery
-                                     .setParameter("name", VariableUtil.resolveVariable(name, nodeInstance))
-                                     .setParameter("description", VariableUtil.resolveVariable(description, nodeInstance))
+                                     .setParameter("name", skipVarResolution ? name : VariableUtil.resolveVariable(name, nodeInstance))
+                                     .setParameter("description", skipVarResolution ? description : VariableUtil.resolveVariable(description, nodeInstance))
                                      .setParameter("taskId", taskId);
 
                     int auditTaskUpdated = auditTaskLogQuery.executeUpdate();
@@ -493,8 +531,8 @@ public class MigrationManager {
                     // update task  instance log with new deployment and process id
                     Query taskLogQuery = em.createQuery("update TaskImpl set name = :name, description = :description where id = :taskId");
                     taskLogQuery
-                                .setParameter("name", VariableUtil.resolveVariable(name, nodeInstance))
-                                .setParameter("description", VariableUtil.resolveVariable(description, nodeInstance))
+                                .setParameter("name", skipVarResolution ? name : VariableUtil.resolveVariable(name, nodeInstance))
+                                .setParameter("description", skipVarResolution ? description : VariableUtil.resolveVariable(description, nodeInstance))
                                 .setParameter("taskId", taskId);
 
                     int taskUpdated = taskLogQuery.executeUpdate();
@@ -502,7 +540,12 @@ public class MigrationManager {
 
                 }
             }
-
+            //Append the contents of collected task Ids to a file.
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(fileName))){
+            	taskIdToNameMap.store(writer , null);
+            }catch(Exception e) {
+            	  e.printStackTrace();
+            }	   
             
         }
 
