@@ -23,12 +23,16 @@ import org.drools.mvel.MVELSafeHelper;
 import org.jbpm.process.core.context.variable.VariableScope;
 import org.jbpm.process.instance.context.variable.VariableScopeInstance;
 import org.jbpm.util.PatternConstants;
+import org.jbpm.workflow.core.impl.NodeImpl;
 import org.jbpm.workflow.instance.impl.NodeInstanceResolverFactory;
 import org.kie.api.runtime.process.NodeInstance;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 
 public class VariableUtil {
+	private static final Logger logger = LoggerFactory.getLogger(VariableUtil.class);
     public static String resolveVariable(String s, NodeInstance nodeInstance) {
         if (s == null) {
             return null;
@@ -38,6 +42,8 @@ public class VariableUtil {
         Matcher matcher = PatternConstants.PARAMETER_MATCHER.matcher(s);
         while (matcher.find()) {
             String paramName = matcher.group(1);
+            String uniqueId = (String) ((NodeImpl) ((org.jbpm.workflow.instance.NodeInstance) nodeInstance).getNode()).getMetaData().get("UniqueId");
+            logger.info("s ==> "+s+ " paramName ==> "+paramName+" NodeId ==> "+nodeInstance.getNodeId()+ " NodeInstanceId ==> "+nodeInstance.getId()+" NodeUniqueId ==> "+uniqueId+ " Node Name ==> "+nodeInstance.getNodeName()+ " class name ==> "+nodeInstance.getClass()); 
             if (replacements.get(paramName) == null) {
                 VariableScopeInstance variableScopeInstance = (VariableScopeInstance)
                         ((org.jbpm.workflow.instance.NodeInstance)nodeInstance).resolveContextInstance(VariableScope.VARIABLE_SCOPE, paramName);
