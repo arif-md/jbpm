@@ -1,4 +1,5 @@
 <p align="center"><img width=55% height=55% src="docsimg/jbpm_logo_450px.png"></p>
+<p>test commit</p>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 [![GitHub Stars](https://img.shields.io/github/stars/kiegroup/jbpm.svg)](https://github.com/kiegroup/jbpm/stargazers)
