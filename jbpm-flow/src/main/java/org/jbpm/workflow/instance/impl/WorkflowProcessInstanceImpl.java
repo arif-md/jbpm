@@ -694,6 +694,8 @@ public abstract class WorkflowProcessInstanceImpl extends ProcessInstanceImpl
 
 
             try {
+                List<NodeInstance> currentView = getNodeInstances().stream().map(e -> (NodeInstance) e)
+                        .collect(Collectors.toList());
                 this.activatingNodeIds = new ArrayList<>();
                 List<EventListener> listeners = eventListeners.get(type);
                 if (listeners != null) {
@@ -708,7 +710,8 @@ public abstract class WorkflowProcessInstanceImpl extends ProcessInstanceImpl
                     }
                 }
 
-                signal(this, (node) -> this.getNodeInstance(node), () -> this.getWorkflowProcess().getNodes(),  type, event);
+                signal(currentView, (node) -> this.getNodeInstance(node), () -> this.getWorkflowProcess().getNodes(),
+                        type, event);
 
                 if (((org.jbpm.workflow.core.WorkflowProcess) getWorkflowProcess()).isDynamic()) {
                     for (Node node : getWorkflowProcess().getNodes()) {
@@ -737,8 +740,8 @@ public abstract class WorkflowProcessInstanceImpl extends ProcessInstanceImpl
         }
     }
 
-    private void signal(NodeInstanceContainer container, Function<Node,NodeInstance> nodeInstanceSupplier, Supplier<Node[]> resolveNodes, String type, Object event) {
-        List<NodeInstance> currentView = container.getNodeInstances().stream().map(e -> (NodeInstance) e).collect(Collectors.toList());
+    private void signal(List<NodeInstance> currentView, Function<Node, NodeInstance> nodeInstanceSupplier,
+            Supplier<Node[]> resolveNodes, String type, Object event) {
         for (Node node : resolveNodes.get()) {
             if (node instanceof EventNodeInterface
                     && ((EventNodeInterface) node).acceptsEvent(type, event, getEventFilterResolver(this, node, currentView))) {
@@ -823,16 +826,18 @@ public abstract class WorkflowProcessInstanceImpl extends ProcessInstanceImpl
             return (varExpression) -> {
                 try {
                     // for each can have multiple outcomes 1 per item of the list so it should be computed like that
-                    ForEachNodeInstance forEachNodeInstance = (ForEachNodeInstance) getNodeInstanceByNodeId(node.getId(), true);
-                    if(forEachNodeInstance == null) {
-                        return new Object[0];
-                    }
-                    List<CompositeContextNodeInstance> data = forEachNodeInstance.getNodeInstances().stream().filter(e -> e instanceof CompositeContextNodeInstance).map(e -> (CompositeContextNodeInstance) e).collect(Collectors.toList());
                     List<Object> outcome = new ArrayList<>();
-                    for(CompositeContextNodeInstance nodeInstance : data) {
-                        Object resolvedValue = resolveExpressionVariable(varExpression, new NodeInstanceResolverFactory(nodeInstance)).orElse(null);
-                        if(resolvedValue != null) {
-                            outcome.add(resolvedValue);
+                    for (NodeInstance item : getNodeInstances(true)) {
+                        if (item.getNodeId() == node.getId() && item instanceof ForEachNodeInstance) {
+                            for (org.kie.api.runtime.process.NodeInstance nodeInstance : ((ForEachNodeInstance) item)
+                                    .getNodeInstances()) {
+                                if (nodeInstance instanceof CompositeContextNodeInstance) {
+                                    resolveExpressionVariable(varExpression,
+                                            new NodeInstanceResolverFactory(
+                                                    (CompositeContextNodeInstance) nodeInstance))
+                                            .ifPresent(outcome::add);
+                                }
+                            }
                         }
                     }
                     return outcome.toArray();

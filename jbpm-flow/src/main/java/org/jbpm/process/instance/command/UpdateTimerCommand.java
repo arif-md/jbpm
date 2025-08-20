@@ -27,8 +27,10 @@ import javax.xml.bind.annotation.XmlSchemaType;
 
 import org.drools.core.command.SingleSessionCommandService;
 import org.drools.core.command.impl.CommandBasedStatefulKnowledgeSession;
+import org.drools.core.common.InternalKnowledgeRuntime;
 import org.drools.core.impl.StatefulKnowledgeSessionImpl;
 import org.jbpm.process.instance.InternalProcessRuntime;
+import org.jbpm.process.instance.ProcessInstance;
 import org.jbpm.process.instance.timer.TimerInstance;
 import org.jbpm.process.instance.timer.TimerManager;
 import org.jbpm.ruleflow.instance.RuleFlowProcessInstance;
@@ -135,6 +137,7 @@ public class UpdateTimerCommand implements ExecutableCommand<Void>, ProcessInsta
         if (newTimer != null) {
             wfp.internalSetSlaTimerId(newTimer.getId());
             wfp.internalSetSlaDueDate(new Date(System.currentTimeMillis() + newTimer.getDelay()));
+            fireProcessInstanceDataChangedEvent(wfp);
             return null;
         }
 
@@ -163,13 +166,19 @@ public class UpdateTimerCommand implements ExecutableCommand<Void>, ProcessInsta
                 List<Long> timerList = sbni.getTimerInstances();
                 if ((timerList != null && timerList.contains(timerId)) || (sbni.getNodeName() != null && sbni.getNodeName().equals(timerName))) {
                     
-                    if (timerList != null && timerList.size() == 1) {
-                        TimerInstance timer = tm.getTimerMap().get(timerList.get(0));
-    
+                    if (timerList != null && timerList.size() >= 1) {
+                        int index = timerList.indexOf(timerId);
+                        //When UpdateTimerCommand is inited with timername, timerid is set to -1
+                        TimerInstance timer = tm.getTimerMap().get(timerId == -1 ? timerList.get(0) : timerList.get(index));
+                    
                         newTimer = rescheduleTimer(timer, tm);
                         logger.debug("New timer {} about to be registered", newTimer);
-                        tm.registerTimer(newTimer, wfp);                        
-                        timerList.clear();
+                        tm.registerTimer(newTimer, wfp);   
+                        if (timerId == -1 && timerList.size() == 1) {
+                            timerList.clear();
+                        } else {
+                            timerList.remove(index);
+                        }
                         timerList.add(newTimer.getId());
     
                         sbni.internalSetTimerInstances(timerList);
@@ -224,7 +233,7 @@ public class UpdateTimerCommand implements ExecutableCommand<Void>, ProcessInsta
     
     protected TimerInstance rescheduleTimer(TimerInstance timer, TimerManager tm) {
         logger.debug("Found timer {} that is going to be canceled", timer);
-        tm.cancelTimer(timer.getProcessInstanceId(), timer.getTimerId());
+        tm.cancelTimer(timer.getProcessInstanceId(), timer.getId());
         logger.debug("Timer {} canceled successfully", timer);
         
         TimerInstance newTimer = new TimerInstance();
@@ -238,5 +247,11 @@ public class UpdateTimerCommand implements ExecutableCommand<Void>, ProcessInsta
         newTimer.setTimerId(timer.getTimerId());        
         
         return newTimer;
+    }
+
+    private void fireProcessInstanceDataChangedEvent(ProcessInstance processInstance){
+        InternalKnowledgeRuntime kruntime = processInstance.getKnowledgeRuntime();
+        InternalProcessRuntime processRuntime = (InternalProcessRuntime) kruntime.getProcessRuntime();
+        processRuntime.getProcessEventSupport().fireAfterProcessDataChanged(processInstance, kruntime);
     }
 }
